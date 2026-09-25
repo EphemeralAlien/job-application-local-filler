@@ -14,7 +14,7 @@ if (-not $PythonPath) {
 if (-not $VaultPath) { $VaultPath = Join-Path $toolDirectory "personal.vault" }
 if (-not $AutomationDirectory) { $AutomationDirectory = Join-Path $toolDirectory "automation" }
 if (-not $OutputDirectory) {
-    $OutputDirectory = Join-Path ([Environment]::GetFolderPath("MyDocuments")) "网申本地完成表"
+    $OutputDirectory = Join-Path $AutomationDirectory "completed"
 }
 
 $inbox = Join-Path $AutomationDirectory "inbox"
