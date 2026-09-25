@@ -12,6 +12,8 @@ AI返回*.docx
 __pycache__/
 *.py[cod]
 *.tmp
+automation/
+*.pid
 .docx-fill-*
 .docx-prepare-*
 

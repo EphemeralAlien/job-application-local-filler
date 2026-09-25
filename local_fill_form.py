@@ -246,7 +246,11 @@ def write_vault(profile: Mapping[str, str], output: Path, overwrite: bool) -> No
     print(f"已创建加密资料库：{output}")
 
 
-def read_vault(path: Path, sync_tokens: Sequence[str] | None = None) -> Dict[str, str]:
+def read_vault(
+    path: Path,
+    sync_tokens: Sequence[str] | None = None,
+    password: str | None = None,
+) -> Dict[str, str]:
     if not path.exists():
         die(f"找不到加密资料库：{path}")
     try:
@@ -258,7 +262,8 @@ def read_vault(path: Path, sync_tokens: Sequence[str] | None = None) -> Dict[str
         from cryptography.fernet import Fernet, InvalidToken
     except (OSError, ValueError, KeyError, ImportError) as exc:
         die(f"无法读取加密资料库：{exc}")
-    password = getpass.getpass("输入资料库密码（不会显示）：")
+    if password is None:
+        password = getpass.getpass("输入资料库密码（不会显示）：")
     try:
         plaintext = Fernet(derive_key(password, salt, iterations)).decrypt(
             payload["ciphertext"].encode("ascii")
@@ -389,6 +394,8 @@ def cmd_fill(args: argparse.Namespace) -> None:
         die("--profile 和 --vault 只能二选一")
     if not args.profile and not args.vault:
         die("请提供 --profile 或 --vault")
+    if args.password_stdin and args.profile:
+        die("--password-stdin 只能配合 --vault 使用")
     tokens = scan_docx(input_path)
     if args.profile:
         added = sync_profile_file(Path(args.profile), tokens)
@@ -396,7 +403,10 @@ def cmd_fill(args: argparse.Namespace) -> None:
             print(f"已同步资料库：新增 {len(added)} 个字段（未显示字段值）。")
         values = read_ini(Path(args.profile))
     else:
-        values = read_vault(Path(args.vault), tokens)
+        password = sys.stdin.readline().rstrip("\r\n") if args.password_stdin else None
+        if not password:
+            die("未从标准输入收到资料库密码")
+        values = read_vault(Path(args.vault), tokens, password=password)
     missing = [token for token in tokens if not values.get(token, "").strip()]
     if missing:
         print("缺少本地字段（未打印字段值）：", file=sys.stderr)
@@ -457,6 +467,11 @@ def build_parser() -> argparse.ArgumentParser:
     fill.add_argument("--output", required=True, help="最终 DOCX")
     fill.add_argument("--profile", help="明文 profile.ini（仅建议临时使用）")
     fill.add_argument("--vault", help="加密资料库 .vault")
+    fill.add_argument(
+        "--password-stdin",
+        action="store_true",
+        help="从标准输入读取 Vault 密码；仅供受限本地服务调用，不要在命令行中写密码",
+    )
     fill.set_defaults(func=cmd_fill)
 
     sync = sub.add_parser("sync-profile", help="按 Word 占位符补齐本地资料库变量")
