@@ -10,7 +10,7 @@ python -m pip install -r requirements.txt
 
 ## 使用顺序
 
-1. 复制 `profile.ini.example` 为 `profile.ini`，在本机填写真实个人资料。
+1. 运行 `prepare` 后，脚本会自动把文档所需变量追加到本机 `profile.ini`；同名变量的已有值永不覆盖。
 2. 运行 `vault` 生成加密的 `personal.vault`。
 3. 对自己的 Word 模板运行 `prepare`，生成 AI 输入版；再将它与岗位描述交给 AI。要求 AI 填写公开内容和黄色岗位字段，并保留所有 `{{...}}` 占位符。
 4. 对 AI 返回的文件执行 `check`，确认黄色岗位字段没有遗漏。

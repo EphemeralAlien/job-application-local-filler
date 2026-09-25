@@ -186,6 +186,29 @@ def read_ini(path: Path) -> Dict[str, str]:
     return {key.strip(): value.strip() for key, value in parser.items("profile")}
 
 
+def sync_profile_file(path: Path, tokens: Sequence[str]) -> List[str]:
+    """Append missing document variables without changing existing values."""
+    wanted = sorted(set(tokens))
+    if not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("; 此文件由 local_fill_form.py 自动同步。不要上传。\n\n[profile]\n", encoding="utf-8")
+    existing = read_ini(path)
+    missing = [token for token in wanted if token not in existing]
+    if not missing:
+        return []
+    try:
+        original = path.read_text(encoding="utf-8-sig")
+        with path.open("a", encoding="utf-8", newline="\n") as handle:
+            if original and not original.endswith(("\n", "\r")):
+                handle.write("\n")
+            handle.write("\n; 以下字段由当前 Word 占位符自动补齐。\n")
+            for token in missing:
+                handle.write(f"{token} =\n")
+    except OSError as exc:
+        die(f"无法同步资料库：{exc}")
+    return missing
+
+
 def derive_key(password: str, salt: bytes, iterations: int):
     try:
         from cryptography.hazmat.primitives import hashes
@@ -223,7 +246,7 @@ def write_vault(profile: Mapping[str, str], output: Path, overwrite: bool) -> No
     print(f"已创建加密资料库：{output}")
 
 
-def read_vault(path: Path) -> Dict[str, str]:
+def read_vault(path: Path, sync_tokens: Sequence[str] | None = None) -> Dict[str, str]:
     if not path.exists():
         die(f"找不到加密资料库：{path}")
     try:
@@ -245,7 +268,16 @@ def read_vault(path: Path) -> Dict[str, str]:
         die("密码错误或资料库已损坏")
     if not isinstance(values, dict):
         die("资料库内容格式错误")
-    return {str(key).strip(): str(value).strip() for key, value in values.items()}
+    normalized = {str(key).strip(): str(value).strip() for key, value in values.items()}
+    missing = sorted(set(sync_tokens or []) - set(normalized))
+    if missing:
+        normalized.update({token: "" for token in missing})
+        payload["ciphertext"] = Fernet(derive_key(password, salt, iterations)).encrypt(
+            json.dumps(normalized, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        ).decode("ascii")
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(f"已同步加密资料库：新增 {len(missing)} 个字段（未显示字段值）。")
+    return normalized
 
 
 def placeholders_from_values(values: Mapping[str, str]) -> Dict[str, str]:
@@ -357,8 +389,14 @@ def cmd_fill(args: argparse.Namespace) -> None:
         die("--profile 和 --vault 只能二选一")
     if not args.profile and not args.vault:
         die("请提供 --profile 或 --vault")
-    values = read_ini(Path(args.profile)) if args.profile else read_vault(Path(args.vault))
     tokens = scan_docx(input_path)
+    if args.profile:
+        added = sync_profile_file(Path(args.profile), tokens)
+        if added:
+            print(f"已同步资料库：新增 {len(added)} 个字段（未显示字段值）。")
+        values = read_ini(Path(args.profile))
+    else:
+        values = read_vault(Path(args.vault), tokens)
     missing = [token for token in tokens if not values.get(token, "").strip()]
     if missing:
         print("缺少本地字段（未打印字段值）：", file=sys.stderr)
@@ -373,6 +411,29 @@ def cmd_fill(args: argparse.Namespace) -> None:
     print(f"已生成完整信息表：{output_path}（替换 {count} 处）")
 
 
+def cmd_prepare(args: argparse.Namespace) -> None:
+    output = Path(args.output)
+    count = prepare_docx(Path(args.input), output, Path(args.mapping), not args.skip_yellow)
+    profile_path = Path(args.profile) if args.profile else Path(args.mapping).with_name("profile.ini")
+    added = sync_profile_file(profile_path, scan_docx(output))
+    suffix = f"；已同步资料库并新增 {len(added)} 个字段" if added else "；资料库变量已是最新"
+    print(f"已生成 AI 输入版：{output}（写入 {count} 个占位符{suffix}）")
+
+
+def cmd_sync_profile(args: argparse.Namespace) -> None:
+    tokens = scan_docx(Path(args.input))
+    if args.profile and args.vault:
+        die("--profile 和 --vault 只能二选一")
+    if not args.profile and not args.vault:
+        die("请提供 --profile 或 --vault")
+    if args.profile:
+        added = sync_profile_file(Path(args.profile), tokens)
+        print(f"资料库已同步：新增 {len(added)} 个字段；已有值未改动。")
+    else:
+        read_vault(Path(args.vault), tokens)
+        print("加密资料库变量已同步；已有值未改动。")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="本地处理网申 DOCX 占位符，不向 AI 发送敏感值")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -381,10 +442,9 @@ def build_parser() -> argparse.ArgumentParser:
     prepare.add_argument("--input", required=True, help="原始 DOCX 模板")
     prepare.add_argument("--output", required=True, help="AI 输入版 DOCX")
     prepare.add_argument("--map", required=True, dest="mapping", help="field_map.json")
+    prepare.add_argument("--profile", help="要同步的 profile.ini；默认使用 field_map.json 同目录的 profile.ini")
     prepare.add_argument("--skip-yellow", action="store_true", help="不替换黄色岗位字段")
-    prepare.set_defaults(func=lambda a: print(
-        f"已生成 AI 输入版：{a.output}（写入 {prepare_docx(Path(a.input), Path(a.output), Path(a.mapping), not a.skip_yellow)} 个占位符）"
-    ))
+    prepare.set_defaults(func=cmd_prepare)
 
     check = sub.add_parser("check", help="只扫描占位符，不读取本地资料库")
     check.add_argument("--input", required=True, help="AI 返回的 DOCX")
@@ -398,6 +458,12 @@ def build_parser() -> argparse.ArgumentParser:
     fill.add_argument("--profile", help="明文 profile.ini（仅建议临时使用）")
     fill.add_argument("--vault", help="加密资料库 .vault")
     fill.set_defaults(func=cmd_fill)
+
+    sync = sub.add_parser("sync-profile", help="按 Word 占位符补齐本地资料库变量")
+    sync.add_argument("--input", required=True, help="包含占位符的 DOCX")
+    sync.add_argument("--profile", help="明文 profile.ini")
+    sync.add_argument("--vault", help="加密资料库 .vault")
+    sync.set_defaults(func=cmd_sync_profile)
 
     vault = sub.add_parser("vault", help="把 profile.ini 加密为本地资料库")
     vault.add_argument("--profile", required=True, help="明文 profile.ini")
